@@ -27,7 +27,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: build-container-${{ github.ref }}
+  group: build-container-${{ inputs.ref || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -97,8 +97,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.tags.outputs.allinone }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=allinone
+          cache-to: type=gha,mode=max,scope=allinone
 
       - name: Build and push backend image
         if: inputs.image_type == 'split' || inputs.image_type == 'both'
@@ -109,8 +109,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.tags.outputs.backend }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
 
       - name: Build and push frontend image
         if: inputs.image_type == 'split' || inputs.image_type == 'both'
@@ -121,5 +121,5 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.tags.outputs.frontend }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
