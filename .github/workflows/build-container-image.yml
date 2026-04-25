@@ -1,0 +1,125 @@
+name: Build Container Image
+
+# 手动触发，使用 CI 内置授权（GITHUB_TOKEN），独立于项目代码
+on:
+  workflow_dispatch:
+    inputs:
+      image_type:
+        description: 'Which images to build'
+        required: true
+        type: choice
+        options:
+          - allinone
+          - split
+          - both
+        default: allinone
+      tag:
+        description: 'Additional image tag (e.g. latest). Leave empty to only tag with git SHA.'
+        required: false
+        type: string
+      ref:
+        description: 'Branch, tag or SHA to build from (defaults to the branch this workflow runs on)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-container-${{ inputs.ref || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    name: Build ${{ inputs.image_type }} image(s)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: tags
+        env:
+          REPO: ${{ github.repository }}
+          SHORT_SHA: ${{ steps.sha.outputs.short }}
+          CUSTOM_TAG: ${{ inputs.tag }}
+          IMAGE_TYPE: ${{ inputs.image_type }}
+        run: |
+          REPO_LC=$(echo "$REPO" | tr '[:upper:]' '[:lower:]')
+          compute_tags() {
+            local image="$1"
+            local tags="ghcr.io/${REPO_LC}-${image}:sha-${SHORT_SHA}"
+            if [ -n "$CUSTOM_TAG" ]; then
+              tags="${tags},ghcr.io/${REPO_LC}-${image}:${CUSTOM_TAG}"
+            fi
+            echo "$tags"
+          }
+          if [[ "$IMAGE_TYPE" != "split" ]]; then
+            ALLINONE_TAGS="ghcr.io/${REPO_LC}:sha-${SHORT_SHA}"
+            if [ -n "$CUSTOM_TAG" ]; then
+              ALLINONE_TAGS="${ALLINONE_TAGS},ghcr.io/${REPO_LC}:${CUSTOM_TAG}"
+            fi
+            echo "allinone=$ALLINONE_TAGS" >> $GITHUB_OUTPUT
+            echo "All-in-one tags: $ALLINONE_TAGS"
+          fi
+          if [[ "$IMAGE_TYPE" != "allinone" ]]; then
+            BACKEND_TAGS=$(compute_tags "backend")
+            FRONTEND_TAGS=$(compute_tags "frontend")
+            echo "backend=$BACKEND_TAGS" >> $GITHUB_OUTPUT
+            echo "frontend=$FRONTEND_TAGS" >> $GITHUB_OUTPUT
+            echo "Backend tags: $BACKEND_TAGS"
+            echo "Frontend tags: $FRONTEND_TAGS"
+          fi
+
+      - name: Build and push all-in-one image
+        if: inputs.image_type == 'allinone' || inputs.image_type == 'both'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile.allinone
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.tags.outputs.allinone }}
+          cache-from: type=gha,scope=allinone
+          cache-to: type=gha,mode=max,scope=allinone
+
+      - name: Build and push backend image
+        if: inputs.image_type == 'split' || inputs.image_type == 'both'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./backend/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.tags.outputs.backend }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build and push frontend image
+        if: inputs.image_type == 'split' || inputs.image_type == 'both'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./frontend/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.tags.outputs.frontend }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
